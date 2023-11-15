@@ -2,6 +2,7 @@ library(tidyverse)
 library(patchwork)
 library(timetk)
 library(vroom)
+library(tidymodels)
 
 ## Read in Data
 test <- vroom('test.csv')
@@ -9,7 +10,7 @@ train <- vroom('train.csv')
 
 # Create data sets filtered to a random store and item
 
-store1_item3 <- train %>%
+store1_item3 <- train1_3 <- train %>%
   filter(store == 1 & item == 3)
 
 store5_item7 <- train %>%
@@ -45,3 +46,72 @@ p4 <- store9_item22 %>%
   ggtitle("Store 9 Item 22")
 
 (p1 + p2) / (p3 + p4)
+
+
+
+# Create Recipe -----------------------------------------------------------
+
+my_recipe <- recipe(sales~date, data = train1_3) %>%
+  step_date(date, features="dow") %>%
+  step_date(date, features="month") %>%
+  step_date(date, features="year") %>%
+  step_date(date, features="doy") %>%
+  step_date(date, features="decimal") %>%
+  step_date(date, features = "quarter") %>%
+  step_range(date_doy, min = 0, max = pi) %>%
+  step_mutate(sinDOY = sin(date_doy), cosDOY = cos(date_doy))
+
+prep <- prep(my_recipe)
+baked <- bake(prep, train1_3)
+
+# Random Forest -----------------------------------------------------------
+
+forest_mod <- rand_forest(mtry = tune(),
+                          min_n = tune(),
+                          trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+# set workflow
+forest_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(forest_mod)
+
+## Grid of tuning values
+tuning_grid <- grid_regular(mtry(range = c(1,9)),
+                            min_n(),
+                            levels = 5)
+
+# split data into folds
+folds <- vfold_cv(train1_3, v = 10, repeats = 1)
+
+# run Cross validation
+CV_results <- forest_workflow %>%
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse, smape))
+
+# find best parameters
+bestTune <- CV_results %>%
+  select_best("smape")
+
+# collect metrics
+collect_metrics(CV_results) %>%
+  filter(bestTune) %>%
+  pull(mean)
+
+final_forest_workflow <- forest_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = amazon_train)
+
+# predict
+forest_preds <- predict(final_forest_workflow,
+                        new_data = amazon_test,
+                        type = "prob")
+
+final_forest_preds <- tibble(id = amazon_test$id,
+                             ACTION = forest_preds$.pred_1)
+
+vroom_write(final_forest_preds, "forest_predictions.csv", delim = ",")
+
+
