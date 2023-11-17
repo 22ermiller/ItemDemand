@@ -13,7 +13,7 @@ train <- vroom('train.csv')
 store1_item3 <- train1_3 <- train %>%
   filter(store == 1 & item == 3)
 
-store5_item7 <- train %>%
+store5_item7 <- train5_7 <- train %>%
   filter(store == 5 & item == 7)
 
 store6_item17 <- train %>%
@@ -113,5 +113,56 @@ final_forest_preds <- tibble(id = amazon_test$id,
                              ACTION = forest_preds$.pred_1)
 
 vroom_write(final_forest_preds, "forest_predictions.csv", delim = ",")
+
+
+# Exponential Smoothing ---------------------------------------------------
+
+library(modeltime)
+library(timetk)
+
+cv_split <- time_series_split(train5_7, assess = '3 months', cumulative  = TRUE)
+
+# Set up model
+es_model <- exp_smoothing() %>%
+  set_engine("ets") %>%
+  fit(sales~date, data = training(cv_split))
+
+# Cross_validate to tune model
+cv_results <- modeltime_calibrate(es_model,
+                                  new_data = testing(cv_split))
+
+# Visualize CV results
+p3 <- cv_results %>%
+  modeltime_forecast(
+    new_data = testing(cv_split),
+    actual_data = train5_7) %>%
+  plot_modeltime_forecast(.interactive = TRUE)
+
+## Evaluate the accuracy
+cv_results %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(
+    .interactive = FALSE
+  )
+
+## Refit to all data then forecast
+
+es_fullfit <- cv_results %>%
+  modeltime_refit(data = train5_7)
+
+es_preds <- es_fullfit %>%
+  modeltime_forecast(h = '3 months') %>%
+  rename(date = .index, sales = .value) %>%
+  select(date, sales) %>%
+  full_join(., y = test, by = 'date') %>%
+  select(id, sales)
+
+p4 <- es_fullfit %>%
+  modeltime_forecast(h = '3 months', actual_data = train5_7) %>%
+  plot_modeltime_forecast(.interactive = FALSE)
+
+plotly::subplot(p1, p2, p3, p4, nrows = 2)
+
+
 
 
