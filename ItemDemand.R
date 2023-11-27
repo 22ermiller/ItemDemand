@@ -164,5 +164,60 @@ p4 <- es_fullfit %>%
 plotly::subplot(p1, p2, p3, p4, nrows = 2)
 
 
+# ARIMA Model -------------------------------------------------------------
 
+library(forecast)
 
+arima_recipe <- recipe(sales~date, data = train) %>%
+  step_date(date, features = c("dow", "month", "year"))
+
+arima_model <- arima_reg(seasonal_period=365,
+                         non_seasonal_ar = 5,
+                         non_seasonal_ma = 5,
+                         seasonal_ar = 2,
+                         seasonal_ma = 2,
+                         non_seasonal_differences = 2,
+                         seasonal_differences = 2) %>%
+  set_engine("auto_arima")
+
+cv_split <- time_series_split(train5_7, assess = '3 months', cumulative  = TRUE)
+
+arima_wf <- workflow() %>%
+  add_recipe(arima_recipe) %>%
+  add_model(arima_model) %>%
+  fit(data = training(cv_split))
+
+cv_results <- modeltime_calibrate(arima_wf,
+                                  new_data = testing(cv_split))
+
+# Visualize CV results
+p1 <- cv_results %>%
+  modeltime_forecast(
+    new_data = testing(cv_split),
+    actual_data = train5_7) %>%
+  plot_modeltime_forecast(.interactive = TRUE)
+
+## Evaluate the accuracy
+cv_results %>%
+  modeltime_accuracy() %>%
+  table_modeltime_accuracy(
+    .interactive = FALSE
+  )
+
+## Refit to all data then forecast
+
+arima_fullfit <- cv_results %>%
+  modeltime_refit(data = train5_7)
+
+arima_preds <- arima_fullfit %>%
+  modeltime_forecast(h = '3 months') %>%
+  rename(date = .index, sales = .value) %>%
+  select(date, sales) %>%
+  full_join(., y = test, by = 'date') %>%
+  select(id, sales)
+
+p2 <- arima_fullfit %>%
+  modeltime_forecast(h = '3 months', actual_data = train5_7) %>%
+  plot_modeltime_forecast(.interactive = FALSE)
+
+plotly::subplot(p1, p2, p3, p4, nrows = 2)
