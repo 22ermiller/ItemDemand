@@ -169,8 +169,8 @@ plotly::subplot(p1, p2, p3, p4, nrows = 2)
 library(forecast)
 library(modeltime)
 
-arima_recipe <- recipe(sales~date, data = train) %>%
-  step_date(date, features = c("dow", "month", "year"))
+arima_recipe <- recipe(sales~date, data = train5_7) %>%
+  step_date(date, features = c("year", "doy","dow", "month"))
 
 arima_model <- arima_reg(seasonal_period=365,
                          non_seasonal_ar = 5,
@@ -218,7 +218,7 @@ arima_preds <- arima_fullfit %>%
   select(id, sales)
 
 p2 <- arima_fullfit %>%
-  modeltime_forecast(h = '3 months', actual_data = train5_7) %>%
+  modeltime_forecast(h = '2 years', actual_data = train5_7) %>%
   plot_modeltime_forecast(.interactive = FALSE)
 
 plotly::subplot(p1, p2, p3, p4, nrows = 2)
@@ -227,12 +227,56 @@ plotly::subplot(p1, p2, p3, p4, nrows = 2)
 # Facebook Prophet ------------------------------------------------------
 
 library(prophet)
+library(forecast)
+library(modeltime)
 
-cv_split <- time_series_split(train1_3, assess = '3 months', cumulative  = TRUE)
 
-prophet_model <- prophet_reg() %>%
-  set_engine(engine = "prophet") %>%
-  fit(sales~date, data = training(cv_split))
+
+numstores <- max(train$store)
+numitems <- max(train$item)
+
+for(s in 1:numstores) {
+  for(i in 1:numitems) {
+    storeItemTrain <- train %>%
+      filter(store == s) %>%
+      filter(item == i)
+    storeItemTest <- test %>%
+      filter(store == s) %>%
+      filter(item == i)
+    
+    cv_split <- time_series_split(storeItemTrain, assess = '3 months', cumulative  = TRUE)
+    
+    prophet_model <- prophet_reg() %>%
+      set_engine(engine = "prophet") %>%
+      fit(sales~date, data = training(cv_split))
+    
+    # Cross_validate to tune model
+    cv_results <- modeltime_calibrate(prophet_model,
+                                      new_data = testing(cv_split))
+    
+    ## Refit to all data then forecast
+    
+    prophet_fulfitt <- cv_results %>%
+      modeltime_refit(data = storeItemTrain)
+    
+    prophet_preds <- prophet_fulfitt %>%
+      modeltime_forecast(new_data = storeItemTest) %>%
+      rename(date = .index, sales = .value) %>%
+      select(date, sales) %>%
+      full_join(., y = storeItemTest, by = 'date') %>%
+      select(id, sales)
+    
+    if(i == 1 & s == 1) {
+      all_preds <- prophet_preds
+    }
+    else {
+      all_preds <- rbind(all_preds, prophet_preds)
+    }
+    
+    
+    
+  }
+}
 
 # Cross_validate to tune model
 cv_results <- modeltime_calibrate(prophet_model,
@@ -265,8 +309,92 @@ prophet_preds <- prophet_fulfitt %>%
   select(id, sales)
 
 p4 <- prophet_fulfitt %>%
-  modeltime_forecast(h = '3 months', actual_data = train5_7) %>%
+  modeltime_forecast(h = '2 year', actual_data = train1_3) %>%
   plot_modeltime_forecast(.interactive = FALSE)
 
 plotly::subplot(p1, p3, p2, p4, nrows = 2)
+
+
+# Random Forest -----------------------------------------------------------
+
+forest_mod <- rand_forest(mtry = tune(),
+                          min_n = tune(),
+                          trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+my_recipe <- recipe(sales~date, data = train1_3) %>%
+  step_date(date, features="dow") %>%
+  step_date(date, features="month") %>%
+  step_date(date, features="year") %>%
+  step_date(date, features="doy") %>%
+  step_date(date, features = "quarter")
+
+# set workflow
+forest_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(forest_mod)
+
+## Grid of tuning values
+tuning_grid <- grid_regular(mtry(range = c(1,6)),
+                            min_n(),
+                            levels = 5)
+
+# split data into folds
+folds <- vfold_cv(train1_3, v = 10, repeats = 1)
+
+# run Cross validation
+CV_results <- forest_workflow %>%
+  tune_grid(resamples = folds,
+            grid = tuning_grid,
+            metrics = metric_set(rmse))
+
+# find best parameters
+bestTune <- CV_results %>%
+  select_best("rmse")
+
+numstores <- max(train$store)
+numitems <- max(train$item)
+
+for(s in 1:numstores) {
+  for(i in 1:numitems) {
+    
+    storeItemTrain <- train %>%
+      filter(store == s) %>%
+      filter(item == i)
+    storeItemTest <- test %>%
+      filter(store == s) %>%
+      filter(item == i)
+    
+    final_forest_workflow <- forest_workflow %>%
+      finalize_workflow(bestTune) %>%
+      fit(data = storeItemTrain)
+    
+    # predict
+    forest_preds <- predict(final_forest_workflow,
+                            new_data = storeItemTest)
+    
+    preds <- tibble(id = storeItemTest$id, sales = forest_preds$.pred)
+
+    if(i == 1 & s == 1) {
+      all_preds <- preds
+    }
+    else {
+      all_preds <- rbind(all_preds, preds)
+    }
+  }
+}
+
+final_forest_workflow <- forest_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = amazon_train)
+
+# predict
+forest_preds <- predict(final_forest_workflow,
+                        new_data = amazon_test,
+                        type = "prob")
+
+final_forest_preds <- tibble(id = amazon_test$id,
+                             ACTION = forest_preds$.pred_1)
+
 
