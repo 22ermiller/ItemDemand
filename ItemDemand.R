@@ -323,7 +323,7 @@ forest_mod <- rand_forest(mtry = tune(),
   set_engine("ranger") %>%
   set_mode("regression")
 
-my_recipe <- recipe(sales~date, data = train1_3) %>%
+my_recipe <- recipe(sales~date, data = train) %>%
   step_date(date, features="dow") %>%
   step_date(date, features="month") %>%
   step_date(date, features="year") %>%
@@ -336,28 +336,13 @@ forest_workflow <- workflow() %>%
   add_model(forest_mod)
 
 ## Grid of tuning values
-tuning_grid <- grid_regular(mtry(range = c(1,6)),
-                            min_n(),
-                            levels = 5)
 
-# split data into folds
-folds <- vfold_cv(train1_3, v = 10, repeats = 1)
-
-# run Cross validation
-CV_results <- forest_workflow %>%
-  tune_grid(resamples = folds,
-            grid = tuning_grid,
-            metrics = metric_set(rmse))
-
-# find best parameters
-bestTune <- CV_results %>%
-  select_best("rmse")
 
 numstores <- max(train$store)
 numitems <- max(train$item)
 
-for(s in 1:numstores) {
-  for(i in 1:numitems) {
+for(s in 1:3) {
+  for(i in 1:3) {
     
     storeItemTrain <- train %>%
       filter(store == s) %>%
@@ -365,6 +350,25 @@ for(s in 1:numstores) {
     storeItemTest <- test %>%
       filter(store == s) %>%
       filter(item == i)
+    
+    tuning_grid <- grid_regular(mtry(range = c(1,6)),
+                                min_n(),
+                                levels = 5)
+    
+    # split data into folds
+    folds <- vfold_cv(storeItemTrain, v = 10, repeats = 1)
+    
+    # run Cross validation
+    CV_results <- forest_workflow %>%
+      tune_grid(resamples = folds,
+                grid = tuning_grid,
+                metrics = metric_set(rmse))
+    
+    # find best parameters
+    bestTune <- CV_results %>%
+      select_best("rmse")
+    
+    print(bestTune)
     
     final_forest_workflow <- forest_workflow %>%
       finalize_workflow(bestTune) %>%
